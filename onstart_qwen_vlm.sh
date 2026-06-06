@@ -1,8 +1,29 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+LOG_FILE=/var/log/onstart_qwen_vlm.log
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "===== onstart_qwen_vlm.sh started: $(date) ====="
+
+# Load Docker env vars from PID 1.
+# SSH login shell may not inherit Docker -e variables, so read them manually.
+if [[ -r /proc/1/environ ]]; then
+  while IFS= read -r -d '' item; do
+    case "$item" in
+      RCLONE_CONFIG=*|RCLONE_CONFIG_B64=*|HF_HOME=*|TRANSFORMERS_CACHE=*|WANDB_DIR=*)
+        export "$item"
+        ;;
+    esac
+  done < /proc/1/environ
+fi
+
+# Do not print RCLONE_CONFIG_B64 itself.
+echo "RCLONE_CONFIG=${RCLONE_CONFIG:-<unset>}"
+echo "RCLONE_CONFIG_B64 length=${#RCLONE_CONFIG_B64}"
+
 # =========================
-# Fix SSH authorized_keys permissions
+# Fix SSH permissions
 # =========================
 mkdir -p /root/.ssh
 chown root:root /root /root/.ssh
@@ -31,7 +52,7 @@ mkdir -p \
   /workspace/.config/rclone
 
 # =========================
-# Common environment
+# Common env
 # =========================
 export HF_HOME=/workspace/.cache/huggingface
 export TRANSFORMERS_CACHE=/workspace/.cache/huggingface
@@ -65,25 +86,32 @@ chmod 700 /workspace/.config
 chmod 700 /workspace/.config/rclone
 
 if [[ -n "${RCLONE_CONFIG_B64:-}" ]]; then
-  echo "Restoring rclone config from RCLONE_CONFIG_B64..."
-  echo "${RCLONE_CONFIG_B64}" | base64 -d > "${RCLONE_CONFIG}"
-  chmod 600 "${RCLONE_CONFIG}"
+  echo "Restoring rclone config to ${RCLONE_CONFIG}"
+
+  tmp_conf="${RCLONE_CONFIG}.tmp"
+  printf '%s' "${RCLONE_CONFIG_B64}" | base64 -d > "${tmp_conf}"
+  chmod 600 "${tmp_conf}"
+
+  if rclone --config "${tmp_conf}" listremotes >/tmp/rclone-remotes.txt 2>/tmp/rclone-error.txt; then
+    mv "${tmp_conf}" "${RCLONE_CONFIG}"
+    chmod 600 "${RCLONE_CONFIG}"
+    echo "rclone config restored successfully."
+    echo "Available remotes:"
+    cat /tmp/rclone-remotes.txt
+  else
+    echo "ERROR: decoded rclone config is invalid."
+    cat /tmp/rclone-error.txt || true
+    rm -f "${tmp_conf}"
+  fi
 else
-  echo "RCLONE_CONFIG_B64 is not set. rclone config will not be restored automatically."
+  echo "WARNING: RCLONE_CONFIG_B64 is empty or unset."
 fi
 
 mkdir -p /root/.config/rclone
 ln -sf "${RCLONE_CONFIG}" /root/.config/rclone/rclone.conf
 
-if [[ -s "${RCLONE_CONFIG}" ]]; then
-  echo "rclone config restored at ${RCLONE_CONFIG}"
-  rclone listremotes || true
-else
-  echo "rclone config file does not exist or is empty: ${RCLONE_CONFIG}"
-fi
-
 # =========================
-# Python / GPU environment check
+# Python / GPU check
 # =========================
 if [[ -f /venv/main/bin/activate ]]; then
   source /venv/main/bin/activate
@@ -104,4 +132,4 @@ except Exception as e:
     print("flash_attn import failed:", e)
 PY
 
-echo "Vast Qwen VLM container is ready."
+echo "===== onstart_qwen_vlm.sh finished: $(date) ====="
