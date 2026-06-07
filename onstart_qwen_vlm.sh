@@ -113,7 +113,9 @@ ln -sf "${RCLONE_CONFIG}" /root/.config/rclone/rclone.conf
 # =========================
 # Python / GPU check
 # =========================
-if [[ -f /venv/main/bin/activate ]]; then
+if [[ -f /venv/qwen/bin/activate ]]; then
+  source /venv/qwen/bin/activate
+elif [[ -f /venv/main/bin/activate ]]; then
   source /venv/main/bin/activate
 fi
 
